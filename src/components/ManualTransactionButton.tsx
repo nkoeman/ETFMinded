@@ -26,6 +26,8 @@ type FormState = {
   transactionCosts: string;
 };
 
+const TRANSACTIONS_CHANGED_EVENT = "transactions:changed";
+
 function todayDateValue() {
   const now = new Date();
   return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
@@ -145,6 +147,7 @@ export function ManualTransactionButton({ exchanges }: ManualTransactionButtonPr
 
       setOpen(false);
       setMessage("Transaction added.");
+      window.dispatchEvent(new CustomEvent(TRANSACTIONS_CHANGED_EVENT));
       router.refresh();
     } catch {
       setError("Unable to create transaction.");

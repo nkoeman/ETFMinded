@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
+import { revalidatePath } from "next/cache";
 import { getCurrentAppUser } from "@/lib/auth/appUser";
 import { resolveOrCreateListingForSelectedExchange } from "@/lib/eodhd/mapping";
 import { getFxRateForWeek } from "@/lib/fx/convert";
 import { syncWeeklyFxRates } from "@/lib/fx/sync";
 import { syncFullForUser, syncLast4WeeksForUser } from "@/lib/prices/sync";
 import { prisma } from "@/lib/prisma";
+import { deleteAllTransactionsForUser } from "@/lib/transactions/deleteTransactions";
 import { buildTransactionUniqueKey } from "@/lib/transactions/buildUniqueKey";
+import { getTransactionTableRows } from "@/lib/transactions/transactionRows";
 
 export const runtime = "nodejs";
 
@@ -82,6 +85,21 @@ function getFxAnchorFriday(value: Date) {
 function shouldRunFullSync(tradeAt: Date) {
   const recentBoundary = Date.now() - RECENT_SYNC_DAYS * ONE_DAY_MS;
   return tradeAt.getTime() < recentBoundary;
+}
+
+export async function GET() {
+  try {
+    const user = await getCurrentAppUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const rows = await getTransactionTableRows(user.id);
+    return NextResponse.json({ rows });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to load transactions.";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
 }
 
 // Persists a single manual trade while preserving the current signed-quantity model used across valuations.
@@ -234,5 +252,39 @@ export async function POST(req: Request) {
 
     const message = error instanceof Error ? error.message : "Unable to create transaction.";
     return NextResponse.json({ error: message }, { status: 400 });
+  }
+}
+
+export async function DELETE() {
+  try {
+    const user = await getCurrentAppUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const result = await deleteAllTransactionsForUser(user.id);
+    if (!result.deleted) {
+      return NextResponse.json(
+        { error: "Portfolio update is already running. Try again after it completes." },
+        { status: 409 }
+      );
+    }
+
+    revalidatePath("/app");
+    revalidatePath("/app/portfolio");
+    revalidatePath("/app/import");
+    revalidatePath("/app/insights");
+    revalidatePath("/app/setup");
+
+    return NextResponse.json({
+      ok: true,
+      transactionsDeleted: result.transactionsDeleted,
+      importBatchesDeleted: result.importBatchesDeleted,
+      dailyValuesDeleted: result.dailyValuesDeleted,
+      aiSummariesDeleted: result.aiSummariesDeleted
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to delete transactions.";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

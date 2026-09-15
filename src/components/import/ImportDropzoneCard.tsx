@@ -15,11 +15,14 @@ type ImportDropzoneCardProps = {
 
 type ImportResult = {
   imported: number;
+  updated?: number;
   skipped: number;
   totalRows: number;
   initialSetup?: boolean;
   warning?: string | null;
 };
+
+const TRANSACTIONS_CHANGED_EVENT = "transactions:changed";
 
 function formatDate(value: string | null) {
   if (!value) return "-";
@@ -57,12 +60,16 @@ export function ImportDropzoneCard({ latestImport }: ImportDropzoneCardProps) {
         }
 
         const result = body as ImportResult;
-        setMessage(`Imported ${result.imported} row(s), skipped ${result.skipped} duplicate row(s) out of ${result.totalRows}.`);
+        const updated = result.updated ?? 0;
+        setMessage(
+          `Imported ${result.imported} new row(s), updated ${updated} existing row(s), skipped ${result.skipped} unchanged row(s) out of ${result.totalRows}.`
+        );
         if (result.warning) setError(result.warning);
         if (result.initialSetup) {
           router.push("/app/setup");
           return;
         }
+        window.dispatchEvent(new CustomEvent(TRANSACTIONS_CHANGED_EVENT));
         router.refresh();
       } catch (uploadError) {
         setError(uploadError instanceof Error ? uploadError.message : "Import failed.");

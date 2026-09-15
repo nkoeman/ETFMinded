@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentAppUser } from "@/lib/auth/appUser";
 import { resolveOrCreateListingForTransaction } from "@/lib/eodhd/mapping";
-import { parseDegiroCsv } from "@/lib/import/degiroCsv";
+import { aggregateDegiroOrderExecutions, parseDegiroCsv } from "@/lib/import/degiroCsv";
 import {
   buildFallbackTransactionKey,
   buildImportIdentity,
@@ -37,6 +37,52 @@ type PreparedImportRow = {
   isin: string;
 };
 
+type ExistingOrderTransaction = {
+  id: string;
+  externalOrderId: string | null;
+  instrumentId: string;
+  listingId: string | null;
+  tradeAt: Date;
+  quantity: unknown;
+  price: unknown;
+  valueEur: unknown;
+  totalEur: unknown;
+  currency: string;
+  exchange: string;
+  exchangeCode: string;
+  uniqueKey: string;
+};
+
+const NUMBER_TOLERANCE = 0.000001;
+
+function nullableNumber(value: unknown) {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function numbersDiffer(left: number | null, right: unknown) {
+  const parsedRight = nullableNumber(right);
+  if (left === null || parsedRight === null) return left !== parsedRight;
+  return Math.abs(left - parsedRight) > NUMBER_TOLERANCE;
+}
+
+function existingOrderTransactionDiffers(row: PreparedImportRow, existing: ExistingOrderTransaction) {
+  return (
+    existing.instrumentId !== row.instrumentId ||
+    existing.listingId !== row.listingId ||
+    existing.tradeAt.getTime() !== row.tradeAt.getTime() ||
+    numbersDiffer(row.quantity, existing.quantity) ||
+    numbersDiffer(row.price, existing.price) ||
+    numbersDiffer(row.valueEur, existing.valueEur) ||
+    numbersDiffer(row.totalEur, existing.totalEur) ||
+    existing.currency !== row.currency ||
+    existing.exchange !== row.exchange ||
+    existing.exchangeCode !== row.exchangeCode ||
+    existing.uniqueKey !== row.uniqueKey
+  );
+}
+
 // Imports a DeGiro CSV, resolves MIC-first listing mapping, and triggers background price sync.
 export async function POST(req: Request) {
   try {
@@ -59,7 +105,8 @@ export async function POST(req: Request) {
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const csv = buffer.toString("utf8");
-    const rows = parseDegiroCsv(csv);
+    const parsedRows = parseDegiroCsv(csv);
+    const rows = aggregateDegiroOrderExecutions(parsedRows);
 
     if (!rows.length) {
       return NextResponse.json({ error: "No valid rows found in CSV." }, { status: 400 });
@@ -210,18 +257,32 @@ export async function POST(req: Request) {
       )
     );
 
-    const existingOrderIds = new Set<string>();
+    const existingOrderById = new Map<string, ExistingOrderTransaction>();
     if (orderIds.length) {
       const existingOrderRows = await prisma.transaction.findMany({
         where: {
           userId: user.id,
           externalOrderId: { in: orderIds }
         },
-        select: { externalOrderId: true }
+        select: {
+          id: true,
+          externalOrderId: true,
+          instrumentId: true,
+          listingId: true,
+          tradeAt: true,
+          quantity: true,
+          price: true,
+          valueEur: true,
+          totalEur: true,
+          currency: true,
+          exchange: true,
+          exchangeCode: true,
+          uniqueKey: true
+        }
       });
 
       for (const row of existingOrderRows) {
-        if (row.externalOrderId) existingOrderIds.add(row.externalOrderId);
+        if (row.externalOrderId) existingOrderById.set(row.externalOrderId, row);
       }
     }
 
@@ -256,42 +317,81 @@ export async function POST(req: Request) {
 
     const insertableRows = prepared.filter((row) => {
       if (row.externalOrderId) {
-        if (existingOrderIds.has(row.externalOrderId)) return false;
+        if (existingOrderById.has(row.externalOrderId)) return false;
       }
 
       const fallbackKey = buildFallbackTransactionKey(row.tradeAt, row.isin, row.quantity);
       return !existingFallbackKeys.has(fallbackKey);
     });
 
-    const result = await prisma.transaction.createMany({
-      data: insertableRows.map((row) => ({
-        userId: row.userId,
-        instrumentId: row.instrumentId,
-        listingId: row.listingId,
-        importBatchId: row.importBatchId,
-        externalOrderId: row.externalOrderId,
-        tradeAt: row.tradeAt,
-        quantity: row.quantity,
-        price: row.price,
-        valueEur: row.valueEur,
-        totalEur: row.totalEur,
-        currency: row.currency,
-        exchange: row.exchange,
-        exchangeCode: row.exchangeCode,
-        type: row.type,
-        uniqueKey: row.uniqueKey
-      })),
-      skipDuplicates: true
+    const changedExistingRows = prepared.filter((row) => {
+      if (!row.externalOrderId) return false;
+      const existing = existingOrderById.get(row.externalOrderId);
+      return existing ? existingOrderTransactionDiffers(row, existing) : false;
     });
 
-    const unmappedRows = insertableRows.filter((row) => !row.listingId).length;
+    let importedCount = 0;
+    let updatedCount = 0;
+
+    await prisma.$transaction(async (tx) => {
+      if (insertableRows.length) {
+        const result = await tx.transaction.createMany({
+          data: insertableRows.map((row) => ({
+            userId: row.userId,
+            instrumentId: row.instrumentId,
+            listingId: row.listingId,
+            importBatchId: row.importBatchId,
+            externalOrderId: row.externalOrderId,
+            tradeAt: row.tradeAt,
+            quantity: row.quantity,
+            price: row.price,
+            valueEur: row.valueEur,
+            totalEur: row.totalEur,
+            currency: row.currency,
+            exchange: row.exchange,
+            exchangeCode: row.exchangeCode,
+            type: row.type,
+            uniqueKey: row.uniqueKey
+          })),
+          skipDuplicates: true
+        });
+        importedCount = result.count;
+      }
+
+      for (const row of changedExistingRows) {
+        const existing = row.externalOrderId ? existingOrderById.get(row.externalOrderId) : null;
+        if (!existing) continue;
+
+        await tx.transaction.update({
+          where: { id: existing.id },
+          data: {
+            instrumentId: row.instrumentId,
+            listingId: row.listingId,
+            tradeAt: row.tradeAt,
+            quantity: row.quantity,
+            price: row.price,
+            valueEur: row.valueEur,
+            totalEur: row.totalEur,
+            currency: row.currency,
+            exchange: row.exchange,
+            exchangeCode: row.exchangeCode,
+            type: row.type,
+            uniqueKey: row.uniqueKey
+          }
+        });
+        updatedCount += 1;
+      }
+    });
+
+    const touchedRows = [...insertableRows, ...changedExistingRows];
+    const unmappedRows = touchedRows.filter((row) => !row.listingId).length;
     const warning =
       unmappedRows > 0
         ? "Some instruments could not be mapped; they will be excluded from valuation until mapping succeeds automatically."
         : null;
 
     const listingIds = Array.from(
-      new Set(insertableRows.map((row) => row.listingId).filter((id): id is string => Boolean(id)))
+      new Set(touchedRows.map((row) => row.listingId).filter((id): id is string => Boolean(id)))
     );
 
     const lockKey = `price-sync:${user.id}`;
@@ -311,9 +411,12 @@ export async function POST(req: Request) {
     });
 
     return NextResponse.json({
-      imported: result.count,
+      imported: importedCount,
+      updated: updatedCount,
       totalRows: rows.length,
-      skipped: rows.length - result.count,
+      csvRows: parsedRows.length,
+      aggregatedExecutionRows: parsedRows.length - rows.length,
+      skipped: rows.length - importedCount - updatedCount,
       skippedDuplicatesInUpload: duplicateRowsInUpload,
       syncTriggered: true,
       syncMode: isInitialImport ? "full" : "recent",

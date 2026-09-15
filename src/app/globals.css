@@ -721,6 +721,21 @@ main {
   filter: brightness(1.05);
 }
 
+.btn-danger {
+  background: var(--neg);
+  border-color: var(--neg);
+  color: #fff;
+}
+
+.btn-danger:hover {
+  filter: brightness(1.04);
+}
+
+.btn-danger:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .btn-ghost {
   border-color: transparent;
   background: transparent;
@@ -2741,6 +2756,31 @@ main {
   box-shadow: var(--shadow-soft);
 }
 
+.modal-panel-sm {
+  width: min(460px, 100%);
+}
+
+.modal-copy {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.delete-summary {
+  display: grid;
+  gap: 0.2rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  padding: 0.75rem;
+}
+
+.delete-summary span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
 .manual-transaction-form {
   display: grid;
   gap: 0.7rem;
@@ -2945,7 +2985,7 @@ textarea {
 }
 
 .transactions-table {
-  min-width: 860px;
+  min-width: 940px;
 }
 
 .transactions-table th {
@@ -2967,6 +3007,69 @@ textarea {
 
 .amount-cell {
   font-weight: 500;
+}
+
+.transaction-actions-cell {
+  width: 4.5rem;
+}
+
+.transaction-action-menu {
+  position: relative;
+  display: inline-flex;
+  justify-content: flex-end;
+}
+
+.transaction-action-trigger {
+  width: 2rem;
+  height: 2rem;
+  font-weight: 700;
+}
+
+.transaction-action-popover {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  z-index: 20;
+  min-width: 11rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  padding: 0.35rem;
+}
+
+.transaction-action-danger {
+  width: 100%;
+  min-height: 2.25rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--neg);
+  cursor: pointer;
+  padding: 0.45rem 0.55rem;
+  text-align: left;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.transaction-action-danger:hover {
+  background: var(--neg-soft);
+}
+
+.danger-zone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1rem;
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+}
+
+.danger-zone p {
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
 }
 
 .mono {
@@ -3839,6 +3942,15 @@ textarea {
 
   .manual-transaction-grid {
     grid-template-columns: 1fr;
+  }
+
+  .danger-zone {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .danger-zone .btn {
+    width: 100%;
   }
 
   .portfolio-performance-controls {

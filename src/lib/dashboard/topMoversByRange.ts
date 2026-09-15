@@ -110,6 +110,15 @@ function pruneTopMoversCache(now: number) {
   }
 }
 
+export function invalidateTopMoversCacheForUser(userId: string) {
+  const prefix = `${userId}:`;
+  for (const key of topMoversCache.keys()) {
+    if (key.startsWith(prefix)) {
+      topMoversCache.delete(key);
+    }
+  }
+}
+
 export async function getTopMoversByRange(
   userId: string,
   range: PerformanceRangeOption
