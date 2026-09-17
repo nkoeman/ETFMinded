@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type LatestImportMeta = {
@@ -34,14 +34,26 @@ function formatDate(value: string | null) {
 export function ImportDropzoneCard({ latestImport }: ImportDropzoneCardProps) {
   const router = useRouter();
   const [uploading, setUploading] = useState(false);
+  const inFlight = useRef(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  useEffect(() => {
+    if (!uploading) return;
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [uploading]);
   const [dragActive, setDragActive] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const uploadFile = useCallback(
     async (file: File) => {
-      if (!file || uploading) return;
+      if (!file || inFlight.current) return;
 
+      inFlight.current = true;
+      setElapsedSeconds(0);
       setUploading(true);
       setError(null);
       setMessage(null);
@@ -74,10 +86,11 @@ export function ImportDropzoneCard({ latestImport }: ImportDropzoneCardProps) {
       } catch (uploadError) {
         setError(uploadError instanceof Error ? uploadError.message : "Import failed.");
       } finally {
+        inFlight.current = false;
         setUploading(false);
       }
     },
-    [router, uploading]
+    [router]
   );
 
   const lastImportLabel = useMemo(() => {
@@ -97,6 +110,7 @@ export function ImportDropzoneCard({ latestImport }: ImportDropzoneCardProps) {
 
       <label
         className={`dropzone${dragActive ? " is-drag" : ""}`}
+        aria-busy={uploading}
         onDragOver={(event) => {
           event.preventDefault();
           setDragActive(true);
@@ -114,6 +128,7 @@ export function ImportDropzoneCard({ latestImport }: ImportDropzoneCardProps) {
       >
         <input
           type="file"
+          disabled={uploading}
           accept=".csv,text/csv"
           className="sr-only"
           onChange={(event) => {
@@ -130,9 +145,23 @@ export function ImportDropzoneCard({ latestImport }: ImportDropzoneCardProps) {
           <p>Supported columns: Datum, Tijd, Product, ISIN, Aantal, Koers, Waarde EUR, Totaal EUR</p>
         </div>
         <span className="btn btn-primary" aria-disabled={uploading}>
-          {uploading ? "Uploading..." : "Choose file"}
+          {uploading ? <span className="import-loading-spinner" aria-hidden="true" /> : null}
+          {uploading ? "Updating portfolio..." : "Choose file"}
         </span>
       </label>
+
+      {uploading ? (
+        <div className="import-progress">
+          <p role="status">
+            {elapsedSeconds < 30
+              ? "Processing transactions and updating your portfolio. Please keep this page open."
+              : "Still processing. Portfolio history and external data checks can take longer. Please keep this page open."}
+          </p>
+          <small className="tabular-nums" aria-hidden="true">
+            Elapsed: {Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, "0")}
+          </small>
+        </div>
+      ) : null}
 
       <div className="import-status-rows">
         <div className="import-status-row">

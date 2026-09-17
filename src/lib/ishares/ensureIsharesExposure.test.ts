@@ -24,6 +24,38 @@ vi.mock("@/lib/ishares/isharesExposure", () => ({
 import { ensureIsharesExposureSnapshots } from "@/lib/ishares/ensureIsharesExposure";
 
 describe("ensureIsharesExposureSnapshots", () => {
+  it("honors the failed snapshot cooldown during duplicate imports", async () => {
+    mocks.instrumentFindMany.mockResolvedValue([{
+      id: "inst_1", isin: "IE00TEST0001", name: "iShares Core MSCI World UCITS ETF",
+      displayName: null, issuer: "iShares", securityType: "ETF", securityType2: "ETF",
+      marketSector: "Funds", listings: [{ eodhdCode: "SWDA.AS", isPrimary: true }],
+      exposureSnapshots: [{ source: "ISHARES", status: "FAILED",
+        updatedAt: new Date("2026-02-23"), expiresAt: new Date("2026-02-24"),
+        payload: null, sourceMeta: null }]
+    }]);
+    const result = await ensureIsharesExposureSnapshots({ userId: "user_1", onlyMissing: true });
+    expect(result.attempted).toBe(0);
+    expect(mocks.fetchExposure).not.toHaveBeenCalled();
+    expect(mocks.snapshotUpsert).not.toHaveBeenCalled();
+  });
+  it("preserves a usable snapshot on refresh failure and reuses it during imports", async () => {
+    mocks.instrumentFindMany.mockResolvedValue([{
+      id: "inst_1", isin: "IE00TEST0001", name: "iShares Core MSCI World UCITS ETF",
+      displayName: null, issuer: "iShares", securityType: "ETF", securityType2: "ETF",
+      marketSector: "Funds", listings: [{ eodhdCode: "SWDA.AS", isPrimary: true }],
+      exposureSnapshots: [{ source: "ISHARES", status: "READY",
+        updatedAt: new Date("2025-01-01"), expiresAt: new Date("2025-02-01"),
+        payload: { country: [{ country: "US", weight: 1 }], sector: [] }, sourceMeta: null }]
+    }]);
+    mocks.fetchExposure.mockRejectedValue(new Error("Provider unavailable"));
+    const result = await ensureIsharesExposureSnapshots({ userId: "user_1", force: true });
+    expect(result.failed).toBe(1);
+    expect(mocks.snapshotUpsert).not.toHaveBeenCalled();
+    mocks.fetchExposure.mockClear();
+    const reused = await ensureIsharesExposureSnapshots({ userId: "user_1", onlyMissing: true });
+    expect(reused.skippedFresh).toBe(1);
+    expect(mocks.fetchExposure).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.useFakeTimers();
@@ -110,7 +142,7 @@ describe("ensureIsharesExposureSnapshots", () => {
     }
   });
 
-  it("retries when prior snapshot is older than 30 days", async () => {
+  it("retries a failed snapshot after its short retry TTL", async () => {
     mocks.instrumentFindMany.mockResolvedValue([
       {
         id: "inst_1",
@@ -125,8 +157,8 @@ describe("ensureIsharesExposureSnapshots", () => {
         exposureSnapshots: [
           {
             source: "ISHARES",
-            status: "FAILED",
-            expiresAt: new Date("2026-03-01T00:00:00.000Z"),
+              status: "FAILED",
+              expiresAt: new Date("2026-02-22T00:00:00.000Z"),
             updatedAt: new Date("2025-12-01T00:00:00.000Z"),
             sourceMeta: null
           }

@@ -40,6 +40,28 @@ vi.mock("@/lib/portfolio/getNetExternalCashFlow", () => ({
 import { getOrCreateDailyPortfolioSeries } from "@/lib/portfolio/getOrCreateDailyPortfolioSeries";
 
 describe("getOrCreateDailyPortfolioSeries", () => {
+  it("includes an afternoon sale on the final day and its cash flow", async () => {
+    const buy = { instrumentId: "asset", listingId: "listing", quantity: 10,
+      tradeAt: new Date("2026-02-01T10:00:00Z"), valueEur: -100, totalEur: -100,
+      instrument: { listings: [{ id: "listing" }] } };
+    const sell = { ...buy, quantity: -4, tradeAt: new Date("2026-02-02T15:00:00Z"), valueEur: 40, totalEur: 40 };
+    mocks.transactionFindMany.mockImplementation(({ where }) => Promise.resolve(
+      [buy, sell].filter((tx) => tx.tradeAt <= where.tradeAt.lte)
+    ));
+    mocks.listingFindMany.mockResolvedValue([{ id: "listing", isin: "test", currency: "EUR" }]);
+    mocks.dailyListingPriceFindMany.mockResolvedValue([{ listingId: "listing", date: new Date("2026-02-01"),
+      close: 10, adjustedClose: 10, currency: "EUR" }]);
+    mocks.externalFlowSeries.mockImplementation((_user, _start, end) => Promise.resolve(
+      [{ date: new Date("2026-02-01"), amountEur: -100 },
+        ...(sell.tradeAt <= end ? [{ date: new Date("2026-02-02"), amountEur: 40 }] : [])]
+    ));
+    const series = await getOrCreateDailyPortfolioSeries("user", {
+      fromDate: new Date("2026-02-01"), toDate: new Date("2026-02-02"), forceRecompute: true
+    });
+    expect(series.points.map((point) => point.valueEur)).toEqual([100, 60]);
+    expect(series.points[1].netExternalFlowEur).toBe(40);
+    expect(series.points[1].periodReturnPct).toBeCloseTo(0);
+  });
   beforeEach(() => {
     vi.restoreAllMocks();
     mocks.dailyPortfolioValueFindMany.mockReset().mockResolvedValue([]);

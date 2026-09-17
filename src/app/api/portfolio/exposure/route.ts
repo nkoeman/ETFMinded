@@ -30,7 +30,7 @@ export async function GET(req: Request) {
 
     return NextResponse.json(result, {
       headers: {
-        "Cache-Control": "private, max-age=60"
+        "Cache-Control": "private, no-store"
       }
     });
   } catch (error) {

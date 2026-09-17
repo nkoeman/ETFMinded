@@ -13,6 +13,7 @@ type EnsureContext = {
   instrumentIds?: string[];
   issuers?: IssuerKey[];
   force?: boolean;
+  onlyMissing?: boolean;
 };
 
 export type EnsureIsharesExposureSummary = {
@@ -236,10 +237,16 @@ export async function ensureIsharesExposureSnapshots(
     }
 
     const existing = instrument.exposureSnapshots.find((row) => row.source === adapter.source);
+    if (context.onlyMissing && existing?.status === "READY" && existing.payload) {
+      summary.skippedFresh += 1;
+      continue;
+    }
     const shouldSkipByAge =
       existing &&
       !context.force &&
-      !isSnapshotStale(existing.updatedAt, now, refreshDays);
+      (existing.status === "READY"
+        ? !context.onlyMissing && !isSnapshotStale(existing.updatedAt, now, refreshDays)
+        : existing.expiresAt > now);
     if (shouldSkipByAge) {
       summary.skippedFresh += 1;
       console.info(`${`[${adapter.issuer}]`}[SKIP] snapshot still within refresh window`, {
@@ -277,6 +284,9 @@ export async function ensureIsharesExposureSnapshots(
       }
 
       const result = await adapter.fetchExposure(resolved, hints);
+      if (!result.payload.country.length && !result.payload.sector.length) {
+        throw new Error("Provider returned no exposure data.");
+      }
       const expiresAt = addDays(now, getTtlDays(adapter.issuer));
       const normalized = normalizeExposurePayload(result.payload);
 
@@ -331,6 +341,15 @@ export async function ensureIsharesExposureSnapshots(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const expiresAt = addDays(now, failedTtlDays);
+
+      // A provider outage must not erase the last successful exposure breakdown.
+      if (existing?.status === "READY" && existing.payload) {
+        summary.failed += 1;
+        console.warn(`${logPrefix}[REFRESH] keeping last successful exposure`, {
+          instrumentId: instrument.id, error: message
+        });
+        continue;
+      }
 
       await prisma.instrumentExposureSnapshot.upsert({
         where: {

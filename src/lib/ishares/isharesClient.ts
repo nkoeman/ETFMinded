@@ -2,6 +2,8 @@ const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_DELAY_MS = 350;
 const RETRY_BACKOFF_MS = [400, 900, 1800];
 
+class PermanentIsharesError extends Error {}
+
 export type IsharesLocaleConfig = {
   key: string;
   baseUrl: string;
@@ -118,10 +120,11 @@ export async function isharesRequest(url: string, context?: IsharesRequestContex
       if (response.ok) return response;
       if (!isRetriable(response.status)) {
         const body = await response.text();
-        throw new Error(`iShares request failed (${response.status}): ${body || "empty body"}`);
+        throw new PermanentIsharesError(`iShares request failed (${response.status}): ${body || "empty body"}`);
       }
       lastError = new Error(`iShares request failed (${response.status})`);
     } catch (error) {
+      if (error instanceof PermanentIsharesError) throw error;
       lastError = error;
     }
 

@@ -103,6 +103,7 @@ export async function getOrCreateDailyPortfolioSeries(
   } = {}
 ): Promise<DailyPortfolioSeries> {
   const endDate = startOfDay(options.toDate ?? options.endDate ?? new Date());
+  const endOfFinalDay = new Date(endDate.getTime() + ONE_DAY_MS - 1);
   const hasExplicitRange = Boolean(options.fromDate);
   const days = Math.max(1, options.days ?? 28);
   const priceLookbackDays = Math.max(0, options.priceLookbackDays ?? 7);
@@ -166,7 +167,7 @@ export async function getOrCreateDailyPortfolioSeries(
   });
 
   const transactions = await prisma.transaction.findMany({
-    where: { userId, tradeAt: { lte: endDate } },
+    where: { userId, tradeAt: { lte: endOfFinalDay } },
     select: {
       instrumentId: true,
       listingId: true,
@@ -345,7 +346,7 @@ export async function getOrCreateDailyPortfolioSeries(
   }
 
   const computedAt = new Date();
-  const externalFlows = await getExternalCashFlowSeries(userId, startDate, endDate);
+  const externalFlows = await getExternalCashFlowSeries(userId, startDate, endOfFinalDay);
   const externalFlowByDate = new Map(
     externalFlows.map((flow) => [toIsoDate(flow.date), flow.amountEur])
   );

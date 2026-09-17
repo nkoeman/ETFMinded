@@ -4,6 +4,7 @@ import { extractPdfText } from "@/lib/etf/issuers/pdfText";
 import { isharesGetBytes } from "@/lib/ishares/isharesClient";
 import type { IsharesRequestContext } from "@/lib/ishares/isharesClient";
 import { resolveIsharesFundByIsin } from "@/lib/ishares/isharesResolve";
+import { fetchIsharesProductData } from "@/lib/ishares/isharesProductData";
 import type {
   ExposureRowCountry,
   ExposureRowSector,
@@ -490,6 +491,23 @@ export async function fetchIsharesExposureByIsin(
   const requestContext: IsharesRequestContext = {
     cookieJar: new Map()
   };
+  try {
+    const current = await fetchIsharesProductData(isin, requestContext);
+    if (current) {
+      const fallback = applySingleCountryFallback(current.payload, {
+        instrumentId: hints.instrumentId,
+        displayName: hints.productName,
+        benchmarkName: hints.benchmarkName,
+        indexName: hints.indexName
+      });
+      return { ...current, payload: fallback.payload,
+        sourceMeta: { ...current.sourceMeta, countryInference: fallback.meta } };
+    }
+  } catch (error) {
+    console.warn("[ISHARES][PRODUCT_API] falling back to legacy page discovery", {
+      isin, message: error instanceof Error ? error.message : String(error)
+    });
+  }
   const resolved = await resolveIsharesFundByIsin(
     isin,
     {

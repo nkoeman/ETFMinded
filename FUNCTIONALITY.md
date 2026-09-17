@@ -142,7 +142,7 @@ Transactions page with:
 - `/import` -> `/app/import` (permanent redirect)
 
 ## 5. API endpoints
-- `POST /api/import`: import DeGiro CSV and trigger recent sync
+- `POST /api/import`: import DeGiro CSV, fetch prices only for imported listings without stored prices, and await full valuation recalculation
 - `GET /api/ai-summary`: get/generate cached AI insights
 - `GET /api/dashboard/top-movers?range=max|ytd|1y|1m`: get gainers/losers payload for the selected timeframe
 - `POST /api/sync-prices/recent`: sync last ~4 weeks
@@ -197,7 +197,15 @@ Transactions page with:
 7. Resolve listing per row (`resolveOrCreateListingForTransaction`)
 8. Generate deterministic `uniqueKey` hash per transaction
 9. Bulk insert with `skipDuplicates: true` (idempotent import)
-10. Trigger async `syncLast4WeeksForUser(userId)` (best effort)
+10. Under the per-user sync lock, fetch historical prices only for imported mapped listings without stored daily prices; ensure FX for those new listings before recalculating.
+11. Await full daily valuation recomputation using stored prices (including trades throughout the final valuation day), invalidate AI summaries/top movers and app route caches, then return success. Duplicate re-uploads also repair previously interrupted recalculation.
+12. Reuse successful exposure snapshots and fetch missing/failed exposure after transaction persistence. Provider refresh failures preserve the last successful snapshot. Exposure weights are computed from current holdings; exposure responses are not browser-cached.
+
+The Open positions table total is the sum of its displayed market-value rows, rather than a potentially older daily valuation snapshot.
+
+Import feedback includes a loading spinner, elapsed time and a longer-running message after 30 seconds. File selection is disabled while processing. Import timing logs separate market-data, valuation and exposure work. Exposure imports respect failed-snapshot retry cooldowns; permanent iShares HTTP errors (such as 404) fail immediately instead of consuming transient-error retries.
+
+iShares exposure now first uses the official product-screener JSON catalog (exact ISIN matching, cached for one hour) and the current product-data API country/sector breakdowns. Published percentage weights and as-of dates are retained, with the existing single-country inference used only when geography is absent. Legacy HTML/PDF discovery remains a fallback. Existing failed snapshots can be repaired using the authenticated enrichment endpoint with `force: true` after deployment.
 
 ## 8. Listing mapping logic
 Mapping uses MIC-first resolution:

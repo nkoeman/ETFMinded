@@ -9,8 +9,7 @@ import {
 } from "@/lib/import/transactionIdentity";
 import { ensureInstrumentProfiles } from "@/lib/enrichment";
 import { enrichInstrumentsFromOpenFigi } from "@/lib/openfigi/enrich";
-import { kickoffIsharesExposureSnapshots } from "@/lib/ishares/ensureIsharesExposure";
-import { syncFullForUser, syncLast4WeeksForUser } from "@/lib/prices/sync";
+import { refreshPortfolioAfterImport } from "@/lib/import/refreshPortfolioAfterImport";
 import { withSyncLock } from "@/lib/prices/syncLock";
 import { prisma } from "@/lib/prisma";
 import { buildTransactionUniqueKey } from "@/lib/transactions/buildUniqueKey";
@@ -83,13 +82,25 @@ function existingOrderTransactionDiffers(row: PreparedImportRow, existing: Exist
   );
 }
 
-// Imports a DeGiro CSV, resolves MIC-first listing mapping, and triggers background price sync.
 export async function POST(req: Request) {
+  const user = await getCurrentAppUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  // Serialize persistence and recalculation with other portfolio mutations/syncs.
+  const lock = await withSyncLock(
+    `price-sync:${user.id}`,
+    () => importTransactions(req, user.id),
+    { lockedBy: user.id }
+  );
+  return lock.acquired ? lock.result : NextResponse.json(
+    { error: "Portfolio update already running. Please retry the upload when it finishes." },
+    { status: 409 }
+  );
+}
+
+async function importTransactions(req: Request, userId: string) {
+  const user = { id: userId };
   try {
-    const user = await getCurrentAppUser();
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
 
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
@@ -170,11 +181,6 @@ export async function POST(req: Request) {
         error: error instanceof Error ? error.message : String(error)
       });
     }
-
-    kickoffIsharesExposureSnapshots({
-      userId: user.id,
-      instrumentIds: Array.from(instrumentMap.values()).map((instrument) => instrument.id)
-    });
 
     const listingCache = new Map<string, string | null>();
     const seenInputDedupeKeys = new Set<string>();
@@ -394,20 +400,10 @@ export async function POST(req: Request) {
       new Set(touchedRows.map((row) => row.listingId).filter((id): id is string => Boolean(id)))
     );
 
-    const lockKey = `price-sync:${user.id}`;
-    void withSyncLock(
-      lockKey,
-      () => (isInitialImport ? syncFullForUser(user.id) : syncLast4WeeksForUser(user.id)),
-      { lockedBy: user.id }
-    ).then((lock) => {
-      if (!lock.acquired) {
-        console.info("[prices.sync] import-triggered sync skipped; sync already running", {
-          userId: user.id,
-          mode: isInitialImport ? "full" : "recent"
-        });
-      }
-    }).catch((error) => {
-      console.error("[prices.sync] import-triggered sync failed", { userId: user.id, error });
+    const refresh = await refreshPortfolioAfterImport(user.id, {
+      // Include unchanged rows so re-uploading also repairs a previously failed refresh.
+      listingIds: Array.from(new Set(prepared.flatMap((row) => row.listingId ? [row.listingId] : []))),
+      instrumentIds: Array.from(instrumentMap.values()).map((instrument) => instrument.id)
     });
 
     return NextResponse.json({
@@ -418,12 +414,13 @@ export async function POST(req: Request) {
       aggregatedExecutionRows: parsedRows.length - rows.length,
       skipped: rows.length - importedCount - updatedCount,
       skippedDuplicatesInUpload: duplicateRowsInUpload,
-      syncTriggered: true,
-      syncMode: isInitialImport ? "full" : "recent",
+      syncTriggered: refresh.syncedListings > 0,
+      syncMode: refresh.syncedListings > 0 ? "missing" : null,
+      recalculated: true,
       initialSetup: isInitialImport,
       mappedListings: listingIds.length,
       unmappedRows,
-      warning
+      warning: [warning, ...refresh.warnings].filter(Boolean).join(" ") || null
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Import failed.";

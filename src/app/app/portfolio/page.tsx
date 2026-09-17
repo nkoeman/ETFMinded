@@ -489,17 +489,7 @@ export default async function PortfolioPage({
     { key: "ytdPct", label: "% YTD" }
   ];
 
-  const latestPortfolioValue = await prisma.dailyPortfolioValue.findFirst({
-    where: { userId: user.id },
-    orderBy: { date: "desc" },
-    select: { valueEur: true }
-  });
-
-  const summedOpenMarketValue = sumNullable(rows.map((row) => row.marketValueEur));
-  const marketValueTotalEur =
-    latestPortfolioValue?.valueEur !== undefined && latestPortfolioValue?.valueEur !== null
-      ? toNumber(latestPortfolioValue.valueEur)
-      : summedOpenMarketValue;
+  const marketValueTotalEur = sumNullable(rows.map((row) => row.marketValueEur));
   const totalPnlTotalEur = sumNullable(rows.map((row) => row.totalPnlEur));
   const ytdPnlTotalEur = sumNullable(rows.map((row) => row.ytdPnlEur));
   const ytdBaseValueEur =
